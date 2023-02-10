@@ -2,11 +2,13 @@
 
 #include <complex>
 #include <memory>
+#include <optional>
 
 #include "bipp/config.h"
 #include "bipp/exceptions.hpp"
 #include "context_internal.hpp"
 #include "memory/buffer.hpp"
+#include "host/grid_decomposition.hpp"
 
 namespace bipp {
 namespace host {
@@ -35,8 +37,9 @@ private:
   const std::size_t nIntervals_, nFilter_, nPixel_, nAntenna_, nBeam_;
   Buffer<BippFilter> filter_;
   Buffer<T> lmnX_, lmnY_, lmnZ_;
+  std::optional<GridDecomposition<T, 2>> imgDecomposition_;
 
-  std::size_t nMaxInputCount_, inputCount_;
+  std::size_t nMaxInputCount_, collectCount_;
   Buffer<std::complex<T>> virtualVis_;
   Buffer<T> uvwX_, uvwY_, uvwZ_;
   Buffer<T> img_;

@@ -7,6 +7,8 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <numeric>
+#include <vector>
 
 #include "bipp/config.h"
 #include "bipp/exceptions.hpp"
@@ -38,15 +40,27 @@ NufftSynthesis<T>::NufftSynthesis(std::shared_ptr<ContextInternal> ctx, T tol, s
       nPixel_(nPixel),
       nAntenna_(nAntenna),
       nBeam_(nBeam),
-      inputCount_(0) {
-  filter_ = Buffer<BippFilter>(ctx_->host_alloc(), nFilter_);
+      filter_(ctx_->host_alloc(), nFilter_),
+      lmnX_(ctx_->host_alloc(), nPixel_),
+      lmnY_(ctx_->host_alloc(), nPixel_),
+      lmnZ_(ctx_->host_alloc(), nPixel_),
+      collectCount_(0) {
+  // imgDecomposition_.emplace(GridDecomposition<T, 2>(
+  //     *ctx_, {*std::min_element(lmnX, lmnX + nPixel_), *std::min_element(lmnY, lmnY + nPixel_)},
+  //     {*std::max_element(lmnX, lmnX + nPixel_), *std::max_element(lmnY, lmnY + nPixel_)}, {2, 2},
+  //     nPixel_, {lmnX, lmnY}));
+
   std::memcpy(filter_.get(), filter, sizeof(BippFilter) * nFilter_);
-  lmnX_ = Buffer<T>(ctx_->host_alloc(), nPixel_);
-  std::memcpy(lmnX_.get(), lmnX, sizeof(T) * nPixel_);
-  lmnY_ = Buffer<T>(ctx_->host_alloc(), nPixel_);
-  std::memcpy(lmnY_.get(), lmnY, sizeof(T) * nPixel_);
-  lmnZ_ = Buffer<T>(ctx_->host_alloc(), nPixel_);
-  std::memcpy(lmnZ_.get(), lmnZ, sizeof(T) * nPixel_);
+
+  if(imgDecomposition_) {
+    imgDecomposition_.value().apply(lmnX, lmnX_.get());
+    imgDecomposition_.value().apply(lmnY, lmnY_.get());
+    imgDecomposition_.value().apply(lmnZ, lmnZ_.get());
+  } else {
+    std::memcpy(lmnX_.get(), lmnX, sizeof(T) * nPixel_);
+    std::memcpy(lmnY_.get(), lmnY, sizeof(T) * nPixel_);
+    std::memcpy(lmnZ_.get(), lmnZ, sizeof(T) * nPixel_);
+  }
 
   // use at most 33% of memory more accumulation, but not more than 200
   // iterations. TODO: find optimum
@@ -71,11 +85,11 @@ auto NufftSynthesis<T>::collect(std::size_t nEig, T wl, const T* intervals, std:
                                 std::size_t ldw, const T* xyz, std::size_t ldxyz, const T* uvw,
                                 std::size_t lduvw) -> void {
   // store coordinates
-  std::memcpy(uvwX_.get() + inputCount_ * nAntenna_ * nAntenna_, uvw,
+  std::memcpy(uvwX_.get() + collectCount_ * nAntenna_ * nAntenna_, uvw,
               sizeof(T) * nAntenna_ * nAntenna_);
-  std::memcpy(uvwY_.get() + inputCount_ * nAntenna_ * nAntenna_, uvw + lduvw,
+  std::memcpy(uvwY_.get() + collectCount_ * nAntenna_ * nAntenna_, uvw + lduvw,
               sizeof(T) * nAntenna_ * nAntenna_);
-  std::memcpy(uvwZ_.get() + inputCount_ * nAntenna_ * nAntenna_, uvw + 2 * lduvw,
+  std::memcpy(uvwZ_.get() + collectCount_ * nAntenna_ * nAntenna_, uvw + 2 * lduvw,
               sizeof(T) * nAntenna_ * nAntenna_);
 
   auto v = Buffer<std::complex<T>>(ctx_->host_alloc(), nBeam_ * nEig);
@@ -95,44 +109,104 @@ auto NufftSynthesis<T>::collect(std::size_t nEig, T wl, const T* intervals, std:
     }
   }
 
-  auto virtVisPtr = virtualVis_.get() + inputCount_ * nAntenna_ * nAntenna_;
+  auto virtVisPtr = virtualVis_.get() + collectCount_ * nAntenna_ * nAntenna_;
 
   virtual_vis(*ctx_, nFilter_, filter_.get(), nIntervals_, intervals, ldIntervals, nEig, d.get(),
               nAntenna_, v.get(), nBeam_, nBeam_, w, ldw, virtVisPtr,
               nMaxInputCount_ * nIntervals_ * nAntenna_ * nAntenna_,
               nMaxInputCount_ * nAntenna_ * nAntenna_, nAntenna_);
 
-  ++inputCount_;
-  if (inputCount_ >= nMaxInputCount_) {
+  ++collectCount_;
+  if (collectCount_ >= nMaxInputCount_) {
     computeNufft();
   }
 }
 
 template <typename T>
 auto NufftSynthesis<T>::computeNufft() -> void {
-  if (inputCount_) {
+  if (collectCount_) {
     auto output = Buffer<std::complex<T>>(ctx_->host_alloc(), nPixel_);
     auto outputPtr = output.get();
-    Nufft3d3<T> transform(1, tol_, 1, nAntenna_ * nAntenna_ * inputCount_, uvwX_.get(), uvwY_.get(),
-                          uvwZ_.get(), nPixel_, lmnX_.get(), lmnY_.get(), lmnZ_.get());
+
+    const auto nInputPoints = nAntenna_ * nAntenna_ * collectCount_;
+
+    GridDecomposition<T, 3> inputDecomp(
+        *ctx_,
+        {*std::min_element(uvwX_.get(), uvwX_.get() + nInputPoints),
+         *std::min_element(uvwY_.get(), uvwY_.get() + nInputPoints),
+         *std::min_element(uvwZ_.get(), uvwZ_.get() + nInputPoints)},
+        {*std::max_element(uvwX_.get(), uvwX_.get() + nInputPoints),
+         *std::max_element(uvwY_.get(), uvwY_.get() + nInputPoints),
+         *std::max_element(uvwZ_.get(), uvwZ_.get() + nInputPoints)},
+        {2, 2, 1}, nInputPoints, {uvwX_.get(), uvwY_.get(), uvwZ_.get()});
 
     const auto ldVirtVis3 = nAntenna_;
     const auto ldVirtVis2 = nMaxInputCount_ * nAntenna_ * ldVirtVis3;
     const auto ldVirtVis1 = nIntervals_ * ldVirtVis2;
 
-    for (std::size_t i = 0; i < nFilter_; ++i) {
-      for (std::size_t j = 0; j < nIntervals_; ++j) {
-        auto imgPtr = img_.get() + (j + i * nIntervals_) * nPixel_;
-        transform.execute(virtualVis_.get() + i * ldVirtVis1 + j * ldVirtVis2, outputPtr);
+    {
+      Buffer<std::complex<T>> virtualVisPermuted(ctx_->host_alloc(), nInputPoints);
 
-        for (std::size_t k = 0; k < nPixel_; ++k) {
-          imgPtr[k] += outputPtr[k].real();
+      for (std::size_t i = 0; i < nFilter_; ++i) {
+        for (std::size_t j = 0; j < nIntervals_; ++j) {
+          inputDecomp.apply(virtualVis_.get() + i * ldVirtVis1 + j * ldVirtVis2,
+                            virtualVisPermuted.get());
+          std::memcpy(virtualVis_.get() + i * ldVirtVis1 + j * ldVirtVis2, virtualVisPermuted.get(),
+                      virtualVisPermuted.size_in_bytes());
+        }
+      }
+    }
+
+    {
+      Buffer<T> uvwXNew(ctx_->host_alloc(), uvwX_.size());
+      inputDecomp.apply(uvwX_.get(), uvwXNew.get());
+      uvwX_ = std::move(uvwXNew);
+      Buffer<T> uvwYNew(ctx_->host_alloc(), uvwY_.size());
+      inputDecomp.apply(uvwY_.get(), uvwYNew.get());
+      uvwY_ = std::move(uvwYNew);
+      Buffer<T> uvwZNew(ctx_->host_alloc(), uvwZ_.size());
+      inputDecomp.apply(uvwZ_.get(), uvwZNew.get());
+      uvwZ_ = std::move(uvwZNew);
+    }
+
+    const auto* inputTilePtr = inputDecomp.begin();
+    const auto* inputTileEndPtr = inputDecomp.end();
+
+    typename decltype(imgDecomposition_)::value_type::Tile fullImgTile{0, nPixel_};
+    const auto* imgTileEndPtr =
+        imgDecomposition_ ? imgDecomposition_.value().end() : &fullImgTile + 1;
+
+    Buffer<std::complex<T>> virtualVisPermuted(ctx_->host_alloc(), nInputPoints);
+
+    for (; inputTilePtr != inputTileEndPtr; ++inputTilePtr) {
+      if (!inputTilePtr->size) continue;
+      const auto* imgTilePtr = imgDecomposition_ ? imgDecomposition_.value().begin() : &fullImgTile;
+      for (; imgTilePtr != imgTileEndPtr; ++imgTilePtr) {
+        if (!imgTilePtr->size) continue;
+
+        Nufft3d3<T> transform(1, tol_, 1, inputTilePtr->size, uvwX_.get() + inputTilePtr->begin,
+                              uvwY_.get() + inputTilePtr->begin, uvwZ_.get() + inputTilePtr->begin,
+                              imgTilePtr->size, lmnX_.get() + imgTilePtr->begin,
+                              lmnY_.get() + imgTilePtr->begin, lmnZ_.get() + imgTilePtr->begin);
+
+        for (std::size_t i = 0; i < nFilter_; ++i) {
+          for (std::size_t j = 0; j < nIntervals_; ++j) {
+            auto imgPtr = img_.get() + (j + i * nIntervals_) * nPixel_ + imgTilePtr->begin;
+
+            transform.execute(
+                virtualVis_.get() + i * ldVirtVis1 + j * ldVirtVis2 + inputTilePtr->begin,
+                outputPtr);
+
+            for (std::size_t k = 0; k < imgTilePtr->size; ++k) {
+              imgPtr[k] += outputPtr[k].real();
+            }
+          }
         }
       }
     }
   }
 
-  inputCount_ = 0;
+  collectCount_ = 0;
 }
 
 template <typename T>
@@ -149,9 +223,16 @@ auto NufftSynthesis<T>::get(BippFilter f, T* out, std::size_t ld) -> void {
   }
   if (index == nFilter_) throw InvalidParameterError();
 
-  for (std::size_t i = 0; i < nIntervals_; ++i) {
-    std::memcpy(out + i * ld, img_.get() + index * nIntervals_ * nPixel_ + i * nPixel_,
-                sizeof(T) * nPixel_);
+  if (imgDecomposition_) {
+    for (std::size_t i = 0; i < nIntervals_; ++i) {
+      imgDecomposition_.value().reverse(img_.get() + index * nIntervals_ * nPixel_ + i * nPixel_,
+                                        out + i * ld);
+    }
+  } else {
+    for (std::size_t i = 0; i < nIntervals_; ++i) {
+      std::memcpy(out + i * ld, img_.get() + index * nIntervals_ * nPixel_ + i * nPixel_,
+                  sizeof(T) * nPixel_);
+    }
   }
 }
 
