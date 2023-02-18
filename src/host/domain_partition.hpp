@@ -29,16 +29,15 @@ public:
   template <typename T, std::size_t DIM>
   static auto grid(const std::shared_ptr<ContextInternal>& ctx, std::array<std::size_t, DIM> gridDimensions,
                    std::size_t n, std::array<const T*, DIM> coord) -> DomainPartition {
-
     const auto gridSize = std::accumulate(gridDimensions.begin(), gridDimensions.end(),
                                           std::size_t(1), std::multiplies<std::size_t>());
     if (gridSize <= 1) return DomainPartition::single(ctx, n);
 
-    std::array<T, DIM> min, max;
+    std::array<T, DIM> minCoord, maxCoord;
 
     for (std::size_t dimIdx = 0; dimIdx < DIM; ++dimIdx) {
-      min[dimIdx] = *std::min_element(coord[dimIdx], coord[dimIdx] + n);
-      max[dimIdx] = *std::max_element(coord[dimIdx], coord[dimIdx] + n);
+      minCoord[dimIdx] = *std::min_element(coord[dimIdx], coord[dimIdx] + n);
+      maxCoord[dimIdx] = *std::max_element(coord[dimIdx], coord[dimIdx] + n);
     }
 
     Buffer<Group> groups(ctx->host_alloc(), gridSize);
@@ -50,7 +49,7 @@ public:
 
     std::array<T, DIM> gridSpacingInv;
     for (std::size_t dimIdx = 0; dimIdx < DIM; ++dimIdx) {
-      gridSpacingInv[dimIdx] = gridDimensions[dimIdx] / (max[dimIdx] - min[dimIdx]);
+      gridSpacingInv[dimIdx] = gridDimensions[dimIdx] / (maxCoord[dimIdx] - minCoord[dimIdx]);
     }
 
     // Compute the assigned group index in grid for each data point and store temporarily in permut
@@ -62,7 +61,7 @@ public:
         groupIndex = groupIndex * gridDimensions[dimIdx] +
                      std::max<std::size_t>(
                          std::min(static_cast<std::size_t>(gridSpacingInv[dimIdx] *
-                                                           (coord[dimIdx][i] - min[dimIdx])),
+                                                           (coord[dimIdx][i] - minCoord[dimIdx])),
                                   gridDimensions[dimIdx] - 1),
                          0);
 
@@ -167,7 +166,7 @@ public:
           if constexpr (std::is_same_v<ArgType, Buffer<std::size_t>>) {
             const auto* __restrict__ permutPtr = arg.get();
             Buffer<F> tmp(ctx_->host_alloc(), arg.size());
-            const F* __restrict__ tmpPtr = tmp.get();
+            F* __restrict__ tmpPtr = tmp.get();
             for (std::size_t i = 0; i < arg.size(); ++i) {
               tmpPtr[i] = inOut[permutPtr[i]];
             }
