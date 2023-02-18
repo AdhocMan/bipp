@@ -24,12 +24,11 @@ struct ArrayWrapper {
 };
 }  // namespace
 
-template <typename T, std::size_t DIM>
+template <typename T, typename F, std::size_t DIM>
 static __global__ void assign_group_kernel(std::size_t n,
                                            ArrayWrapper<std::size_t, DIM> gridDimensions,
                                            const T* __restrict__ minCoordsMaxGlobal,
-                                           ArrayWrapper<const T*, DIM> coord,
-                                           std::size_t* __restrict__ out) {
+                                           ArrayWrapper<const T*, DIM> coord, F* __restrict__ out) {
   T minCoords[DIM];
   T maxCoords[DIM];
   for (std::size_t dimIdx = 0; dimIdx < DIM; ++dimIdx) {
@@ -61,11 +60,10 @@ static __global__ void assign_group_kernel(std::size_t n,
   }
 }
 
-template <std::size_t BLOCK_THREADS>
+template <std::size_t BLOCK_THREADS, typename T>
 static __global__ void group_count_kernel(std::size_t nGroups, std::size_t n,
-                                          const std::size_t* __restrict__ in,
+                                          const T* __restrict__ in,
                                           std::size_t* groupCount) {
-  using BlockExchangeType = api::cub::BlockExchange<std::size_t, BLOCK_THREADS, BLOCK_THREADS>;
   __shared__ std::size_t inCache[BLOCK_THREADS];
 
   for (std::size_t groupStart = blockIdx.y * BLOCK_THREADS; groupStart < nGroups;
@@ -76,8 +74,15 @@ static __global__ void group_count_kernel(std::size_t nGroups, std::size_t n,
       if (inStart + threadIdx.x < n) inCache[threadIdx.x] = in[inStart + threadIdx.x];
       __syncthreads();
 
-      for (std::size_t i = 0; i < min(BLOCK_THREADS, n - inStart); ++i) {
-        myCount += (inCache[i] == myGroup);
+      if (BLOCK_THREADS > n - inStart) {
+        for (std::size_t i = 0; i < min(BLOCK_THREADS, n - inStart); ++i) {
+          myCount += (inCache[i] == myGroup);
+        }
+      } else {
+#pragma unroll
+        for (std::size_t i = 0; i < BLOCK_THREADS; ++i) {
+          myCount += (inCache[i] == myGroup);
+        }
       }
     }
 
@@ -86,7 +91,14 @@ static __global__ void group_count_kernel(std::size_t nGroups, std::size_t n,
 }
 
 template <typename T>
-static __global__ void apply_permut_kernel(std::size_t n, const std::size_t* __restrict__ permut,
+static __global__ void assign_index_kernel(std::size_t n, T* __restrict__ out) {
+  for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n; i += gridDim.x * blockDim.x) {
+    out[i] = i;
+  }
+}
+
+template <typename T>
+static __global__ void reverse_permut_kernel(std::size_t n, const std::size_t* __restrict__ permut,
                                            const T* __restrict__ in, T* __restrict__ out) {
   for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n; i += gridDim.x * blockDim.x) {
     out[permut[i]] = in[i];
@@ -94,7 +106,7 @@ static __global__ void apply_permut_kernel(std::size_t n, const std::size_t* __r
 }
 
 template <typename T>
-static __global__ void reverse_permut_kernel(std::size_t n, const std::size_t* __restrict__ permut,
+static __global__ void apply_permut_kernel(std::size_t n, const std::size_t* __restrict__ permut,
                                              const T* __restrict__ in, T* __restrict__ out) {
   for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n; i += gridDim.x * blockDim.x) {
     out[i] = in[permut[i]];
@@ -114,6 +126,12 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
   auto& q = ctx->gpu_queue();
 
   auto minMaxBuffer = q.create_device_buffer<T>(2 * DIM);
+  auto keyBuffer = q.create_device_buffer<unsigned>(n);
+  auto indicesBuffer = q.create_device_buffer<std::size_t>(n);
+  auto permutBuffer = q.create_device_buffer<std::size_t>(n);
+  auto sortedKeyBuffer = q.create_device_buffer<unsigned>(n);
+  auto groupSizesBuffer = q.create_device_buffer<std::size_t>(gridSize);
+  auto groupBufferHost = q.create_pinned_buffer<Group>(gridSize);
 
   // Compute the minimum and maximum in each dimension stored in minMax as
   // (min_x, min_y, ..., max_x, max_y, ...)
@@ -138,94 +156,71 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
           workBuffer.get(), worksize, coord[dimIdx], minMaxBuffer.get() + DIM + dimIdx, n,
           q.stream()));
     }
-    q.sync();  // TODO: remove
   }
 
   // Assign the group idx to each input element and store temporarily in the permutation array
-  auto permutBuffer = q.create_device_buffer<std::size_t>(n);
   {
     constexpr int blockSize = 256;
     const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
     const auto grid = kernel_launch_grid(q.device_prop(), {n, 1, 1}, block);
-    api::launch_kernel(assign_group_kernel<T, DIM>, grid, block, 0, q.stream(), n, gridDimensions,
-                       minMaxBuffer.get(), coord, permutBuffer.get());
-    q.sync();  // TODO: remove
+    api::launch_kernel(assign_group_kernel<T, unsigned, DIM>, grid, block, 0, q.stream(), n,
+                       gridDimensions, minMaxBuffer.get(), coord, keyBuffer.get());
+  }
+
+  // Write indices before sorting
+  {
+    constexpr int blockSize = 256;
+    const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
+    const auto grid = kernel_launch_grid(q.device_prop(), {n, 1, 1}, block);
+    api::launch_kernel(assign_index_kernel<std::size_t>, grid, block, 0, q.stream(), n,
+                       indicesBuffer.get());
+  }
+
+
+  // Compute permutation through sorting indices and group keys
+  {
+    std::size_t workSize = 0;
+    api::cub::DeviceRadixSort::SortPairs(nullptr, workSize, keyBuffer.get(), sortedKeyBuffer.get(),
+                                         indicesBuffer.get(), permutBuffer.get(), n, 0,
+                                         sizeof(unsigned) * 8, q.stream());
+
+    auto workBuffer = q.create_device_buffer<char>(workSize);
+    api::cub::DeviceRadixSort::SortPairs(
+        workBuffer.get(), workSize, keyBuffer.get(), sortedKeyBuffer.get(), indicesBuffer.get(),
+        permutBuffer.get(), n, 0, sizeof(unsigned) * 8, q.stream());
   }
 
   // Compute the number of elements in each group
-  auto groupSizesBuffer = q.create_device_buffer<std::size_t>(gridSize);
-  auto groupBeginBuffer = q.create_device_buffer<std::size_t>(gridSize);
   {
-    // constexpr int blockSize =
-    //     128;  // should be small, since each thread will create local array of size blockSize
-    // const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
-    // const auto grid = kernel_launch_grid(q.device_prop(), {n, gridSize / blockSize + 1, 1},
-    // block); api::launch_kernel(
-    //     group_count_kernel<blockSize,
-    //     api::cub::BlockReduceAlgorithm::BLOCK_REDUCE_WARP_REDUCTIONS>, grid, block, 0,
-    //     q.stream(), gridSize, n, permutBuffer.get(), groupSizesBuffer.get());
-
     constexpr int blockSize = 512;
     const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
     const auto grid = kernel_launch_grid(q.device_prop(), {n, gridSize / blockSize + 1, 1}, block);
-    api::launch_kernel(group_count_kernel<blockSize>, grid, block, 0, q.stream(), gridSize, n,
-                       permutBuffer.get(), groupSizesBuffer.get());
-
-    q.sync();  // TODO: remove
+    api::launch_kernel(group_count_kernel<blockSize, unsigned>, grid, block, 0, q.stream(),
+                       gridSize, n, sortedKeyBuffer.get(), groupSizesBuffer.get());
   }
 
-  // Compute the rolling sum through exclusive scan to get the start index for each group
-  {
-    std::size_t worksize = 0;
-    api::check_status(api::cub::DeviceScan::ExclusiveSum<const std::size_t*, std::size_t*>(
-        nullptr, worksize, nullptr, nullptr, gridSize, q.stream()));
-    auto workBuffer = q.create_device_buffer<char>(worksize);
 
-    api::check_status(api::cub::DeviceScan::ExclusiveSum<const std::size_t*, std::size_t*>(
-        workBuffer.get(), worksize, groupSizesBuffer.get(), groupBeginBuffer.get(), gridSize,
-        q.stream()));
-    q.sync();  // TODO: remove
-  }
-
-  auto groupBufferHost = q.create_pinned_buffer<Group>(gridSize);
-  auto permutBufferHost = q.create_host_buffer<std::size_t>(permutBuffer.size());
   // Finally compute permutation array
   {
     static_assert(sizeof(Group) == 2 * sizeof(std::size_t),
                   "Assuming interleaved begin, size for copy");
 
-    gpu::api::memcpy_2d_async(groupBufferHost.get(), sizeof(Group), groupBeginBuffer.get(),
-                              sizeof(std::size_t), sizeof(std::size_t), gridSize,
-                              gpu::api::flag::MemcpyDeviceToHost, q.stream());
-    q.sync();  // TODO: remove
-
     gpu::api::memcpy_2d_async(reinterpret_cast<std::size_t*>(groupBufferHost.get()) + 1,
                               sizeof(Group), groupSizesBuffer.get(), sizeof(std::size_t),
                               sizeof(std::size_t), gridSize, gpu::api::flag::MemcpyDeviceToHost,
                               q.stream());
-    q.sync();  // TODO: remove
-    gpu::api::memcpy_async(permutBufferHost.get(), permutBuffer.get(), permutBuffer.size_in_bytes(),
-                           gpu::api::flag::MemcpyDeviceToHost, q.stream());
-    q.sync();  // TODO: remove
 
     // make sure copy operations are done
     q.sync();
 
     // compute permutation index for each data point and restore group sizes.
     auto* __restrict__ groupsPtr = groupBufferHost.get();
-    auto* __restrict__ permutPtr = permutBufferHost.get();
-    for (std::size_t i = 0; i < n; ++i) {
-      permutPtr[i] = groupsPtr[permutPtr[i]].begin++;
-    }
 
-    // Restore begin index
-    for (std::size_t i = 0; i < groupBufferHost.size(); ++i) {
-      groupsPtr[i].begin -= groupsPtr[i].size;
+    groupsPtr[0].begin = 0;
+    // Compute group begin index
+    for (std::size_t i = 1; i < groupBufferHost.size(); ++i) {
+      groupsPtr[i].begin = groupsPtr[i - 1].size + groupsPtr[i - 1].begin;
     }
-
-    // copy permutation back to device
-    gpu::api::memcpy_async(permutBuffer.get(), permutBufferHost.get(), permutBuffer.size_in_bytes(),
-                           gpu::api::flag::MemcpyHostToDevice, q.stream());
   }
 
   return DomainPartition(ctx, std::move(permutBuffer), std::move(groupBufferHost));

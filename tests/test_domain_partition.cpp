@@ -185,26 +185,32 @@ template <typename T>
 static auto test_grid_random(std::size_t n, std::array<std::size_t, 3> gridDimensions,
                              DomainPartitionTest<T>& t) -> void {
   std::minstd_rand randGen(42);
-  std::uniform_real_distribution<T> distri(-5.0, 10.0);
+  std::uniform_real_distribution<T> distriX(-5.0, 10.0);
+  std::uniform_real_distribution<T> distriY(2.0, 20.0);
+  std::uniform_real_distribution<T> distriZ(100.0, 5000.0);
 
   std::vector<T> x(n);
   std::vector<T> y(n);
   std::vector<T> z(n);
 
-  for (auto& val : x) val = distri(randGen);
-  for (auto& val : y) val = distri(randGen);
-  for (auto& val : z) val = distri(randGen);
+  for (auto& val : x) val = distriX(randGen);
+  for (auto& val : y) val = distriY(randGen);
+  for (auto& val : z) val = distriZ(randGen);
 
   t.test_grid(gridDimensions, {x, y, z});
 }
 
-TEST_P(DomainPartitionSingle, grid_1) { test_grid_random(1, {2, 3, 4}, *this); }
+TEST_P(DomainPartitionSingle, grid_n1) { test_grid_random(1, {2, 3, 4}, *this); }
 
-TEST_P(DomainPartitionDouble, grid_1) { test_grid_random(1, {2, 3, 4}, *this); }
+TEST_P(DomainPartitionDouble, grid_n1) { test_grid_random(1, {2, 3, 4}, *this); }
 
-TEST_P(DomainPartitionSingle, grid_100) { test_grid_random(100, {2, 3, 4}, *this); }
+TEST_P(DomainPartitionSingle, grid_n100) { test_grid_random(100, {2, 3, 4}, *this); }
 
-TEST_P(DomainPartitionDouble, grid_100) { test_grid_random(100, {2, 3, 4}, *this); }
+TEST_P(DomainPartitionDouble, grid_n100) { test_grid_random(100, {2, 3, 4}, *this); }
+
+TEST_P(DomainPartitionSingle, grid_n4000) { test_grid_random(4000, {2, 3, 4}, *this); }
+
+TEST_P(DomainPartitionDouble, grid_n4000) { test_grid_random(4000, {2, 3, 4}, *this); }
 
 static auto param_type_names(const ::testing::TestParamInfo<std::tuple<BippProcessingUnit>>& info)
     -> std::string {
