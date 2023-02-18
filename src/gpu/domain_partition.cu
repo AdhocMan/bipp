@@ -1,5 +1,5 @@
-#include <cstddef>
 #include <array>
+#include <cstddef>
 
 #include "bipp/config.h"
 #include "context_internal.hpp"
@@ -61,7 +61,6 @@ static __global__ void assign_group_kernel(std::size_t n,
   }
 }
 
-
 template <std::size_t BLOCK_THREADS>
 static __global__ void group_count_kernel(std::size_t nGroups, std::size_t n,
                                           const std::size_t* __restrict__ in,
@@ -82,7 +81,7 @@ static __global__ void group_count_kernel(std::size_t nGroups, std::size_t n,
       }
     }
 
-    if(myGroup < nGroups) groupCount[myGroup] = myCount;
+    if (myGroup < nGroups) groupCount[myGroup] = myCount;
   }
 }
 
@@ -139,7 +138,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
           workBuffer.get(), worksize, coord[dimIdx], minMaxBuffer.get() + DIM + dimIdx, n,
           q.stream()));
     }
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
   }
 
   // Assign the group idx to each input element and store temporarily in the permutation array
@@ -150,7 +149,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
     const auto grid = kernel_launch_grid(q.device_prop(), {n, 1, 1}, block);
     api::launch_kernel(assign_group_kernel<T, DIM>, grid, block, 0, q.stream(), n, gridDimensions,
                        minMaxBuffer.get(), coord, permutBuffer.get());
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
   }
 
   // Compute the number of elements in each group
@@ -160,10 +159,11 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
     // constexpr int blockSize =
     //     128;  // should be small, since each thread will create local array of size blockSize
     // const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
-    // const auto grid = kernel_launch_grid(q.device_prop(), {n, gridSize / blockSize + 1, 1}, block);
-    // api::launch_kernel(
-    //     group_count_kernel<blockSize, api::cub::BlockReduceAlgorithm::BLOCK_REDUCE_WARP_REDUCTIONS>,
-    //     grid, block, 0, q.stream(), gridSize, n, permutBuffer.get(), groupSizesBuffer.get());
+    // const auto grid = kernel_launch_grid(q.device_prop(), {n, gridSize / blockSize + 1, 1},
+    // block); api::launch_kernel(
+    //     group_count_kernel<blockSize,
+    //     api::cub::BlockReduceAlgorithm::BLOCK_REDUCE_WARP_REDUCTIONS>, grid, block, 0,
+    //     q.stream(), gridSize, n, permutBuffer.get(), groupSizesBuffer.get());
 
     constexpr int blockSize = 512;
     const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
@@ -171,7 +171,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
     api::launch_kernel(group_count_kernel<blockSize>, grid, block, 0, q.stream(), gridSize, n,
                        permutBuffer.get(), groupSizesBuffer.get());
 
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
   }
 
   // Compute the rolling sum through exclusive scan to get the start index for each group
@@ -184,7 +184,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
     api::check_status(api::cub::DeviceScan::ExclusiveSum<const std::size_t*, std::size_t*>(
         workBuffer.get(), worksize, groupSizesBuffer.get(), groupBeginBuffer.get(), gridSize,
         q.stream()));
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
   }
 
   auto groupBufferHost = q.create_pinned_buffer<Group>(gridSize);
@@ -197,16 +197,16 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
     gpu::api::memcpy_2d_async(groupBufferHost.get(), sizeof(Group), groupBeginBuffer.get(),
                               sizeof(std::size_t), sizeof(std::size_t), gridSize,
                               gpu::api::flag::MemcpyDeviceToHost, q.stream());
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
 
     gpu::api::memcpy_2d_async(reinterpret_cast<std::size_t*>(groupBufferHost.get()) + 1,
                               sizeof(Group), groupSizesBuffer.get(), sizeof(std::size_t),
                               sizeof(std::size_t), gridSize, gpu::api::flag::MemcpyDeviceToHost,
                               q.stream());
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
     gpu::api::memcpy_async(permutBufferHost.get(), permutBuffer.get(), permutBuffer.size_in_bytes(),
                            gpu::api::flag::MemcpyDeviceToHost, q.stream());
-    q.sync(); //TODO: remove
+    q.sync();  // TODO: remove
 
     // make sure copy operations are done
     q.sync();
@@ -259,15 +259,19 @@ auto DomainPartition::apply(F* inOutDevice) -> void {
         using ArgType = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<ArgType, Buffer<std::size_t>>) {
           auto& q = ctx_->gpu_queue();
-          auto tmpBuffer = q.create_device_buffer<F>(arg.size());
-          gpu::api::memcpy_async(tmpBuffer.get(), inOutDevice, sizeof(F) * arg.size(),
+          if (workBufferDevice_.size_in_bytes() < sizeof(F) * arg.size())
+            workBufferDevice_ = q.create_device_buffer<char>(sizeof(F) * arg.size());
+
+          auto workPtr = reinterpret_cast<F*>(workBufferDevice_.get());
+
+          gpu::api::memcpy_async(workPtr, inOutDevice, sizeof(F) * arg.size(),
                                  gpu::api::flag::MemcpyDefault, ctx_->gpu_queue().stream());
 
           constexpr int blockSize = 256;
           const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
           const auto grid = kernel_launch_grid(q.device_prop(), {arg.size(), 1, 1}, block);
           api::launch_kernel(apply_permut_kernel<F>, grid, block, 0, q.stream(), arg.size(),
-                             arg.get(), tmpBuffer.get(), inOutDevice);
+                             arg.get(), workPtr, inOutDevice);
         }
       },
       permut_);
@@ -301,15 +305,20 @@ auto DomainPartition::reverse(F* inOutDevice) -> void {
         using ArgType = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<ArgType, Buffer<std::size_t>>) {
           auto& q = ctx_->gpu_queue();
-          auto tmpBuffer = q.create_device_buffer<F>(arg.size());
-          gpu::api::memcpy_async(tmpBuffer.get(), inOutDevice, sizeof(F) * arg.size(),
+
+          if (workBufferDevice_.size_in_bytes() < sizeof(F) * arg.size())
+            workBufferDevice_ = q.create_device_buffer<char>(sizeof(F) * arg.size());
+
+          auto workPtr = reinterpret_cast<F*>(workBufferDevice_.get());
+
+          gpu::api::memcpy_async(workPtr, inOutDevice, sizeof(F) * arg.size(),
                                  gpu::api::flag::MemcpyDefault, ctx_->gpu_queue().stream());
 
           constexpr int blockSize = 256;
           const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
           const auto grid = kernel_launch_grid(q.device_prop(), {arg.size(), 1, 1}, block);
           api::launch_kernel(reverse_permut_kernel<F>, grid, block, 0, q.stream(), arg.size(),
-                             arg.get(), tmpBuffer.get(), inOutDevice);
+                             arg.get(), workPtr, inOutDevice);
         }
       },
       permut_);

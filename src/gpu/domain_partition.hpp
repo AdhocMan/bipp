@@ -22,7 +22,7 @@ public:
     std::size_t size = 0;
   };
 
-  static auto single(const std::shared_ptr<ContextInternal>& ctx,std::size_t n ) {
+  static auto single(const std::shared_ptr<ContextInternal>& ctx, std::size_t n) {
     Buffer<Group> groupsHost(ctx->host_alloc(), 1);
     *groupsHost.get() = Group{0, n};
     return DomainPartition(ctx, n, std::move(groupsHost));
@@ -56,7 +56,6 @@ public:
                                         std::is_same_v<F, gpu::api::ComplexDoubleType>>>
   auto apply(const F* __restrict__ inDevice, F* __restrict__ outDevice) -> void;
 
-
   template <typename F,
             typename = std::enable_if_t<std::is_same_v<F, float> || std::is_same_v<F, double> ||
                                         std::is_same_v<F, gpu::api::ComplexFloatType> ||
@@ -68,7 +67,6 @@ public:
                                         std::is_same_v<F, gpu::api::ComplexFloatType> ||
                                         std::is_same_v<F, gpu::api::ComplexDoubleType>>>
   auto reverse(const F* __restrict__ inDevice, F* __restrict__ outDevice) -> void;
-
 
   template <typename F,
             typename = std::enable_if_t<std::is_same_v<F, float> || std::is_same_v<F, double> ||
@@ -88,6 +86,7 @@ private:
   std::shared_ptr<ContextInternal> ctx_;
   std::variant<std::size_t, Buffer<std::size_t>> permut_;
   Buffer<Group> groupsHost_;
+  Buffer<char> workBufferDevice_;
 };
 
 }  // namespace gpu

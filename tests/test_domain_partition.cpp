@@ -1,10 +1,10 @@
 #include <array>
 #include <memory>
-#include <tuple>
 #include <numeric>
-#include <vector>
-#include <variant>
 #include <random>
+#include <tuple>
+#include <variant>
+#include <vector>
 
 #include "bipp/config.h"
 #include "context_internal.hpp"
@@ -21,7 +21,6 @@ public:
   using ValueType = T;
 
   DomainPartitionTest() : ctx_(new bipp::ContextInternal(std::get<0>(GetParam()))) {}
-
 
   auto test_grid(std::array<std::size_t, 3> gridDimensions, std::array<std::vector<T>, 3> domain) {
     ASSERT_EQ(domain[0].size(), domain[1].size());
@@ -46,7 +45,7 @@ public:
         bipp::host::DomainPartition::single(ctx_, domain[0].size());
 #endif
 
-    if(ctx_->processing_unit() == BIPP_PU_GPU) {
+    if (ctx_->processing_unit() == BIPP_PU_GPU) {
 #if defined(BIPP_CUDA) || defined(BIPP_ROCM)
       auto bufferX = ctx_->gpu_queue().create_device_buffer<T>(domain[0].size());
       auto bufferY = ctx_->gpu_queue().create_device_buffer<T>(domain[0].size());
@@ -95,6 +94,7 @@ public:
               arg.apply(dataInPlace.data(), dataOutOfPlace.data());
               arg.apply(dataInPlace.data());
             } else {
+#if defined(BIPP_CUDA) || defined(BIPP_ROCM)
               auto dataInPlaceDevice =
                   ctx_->gpu_queue().create_device_buffer<T>(dataInPlace.size());
               auto dataOutOfPlaceDevice =
@@ -116,6 +116,7 @@ public:
                                            ctx_->gpu_queue().stream());
 
               ctx_->gpu_queue().sync();
+#endif
             }
 
             // check data
@@ -139,6 +140,7 @@ public:
               arg.reverse(dataInPlace.data(), dataOutOfPlace.data());
               arg.reverse(dataInPlace.data());
             } else {
+#if defined(BIPP_CUDA) || defined(BIPP_ROCM)
               auto dataInPlaceDevice =
                   ctx_->gpu_queue().create_device_buffer<T>(dataInPlace.size());
               auto dataOutOfPlaceDevice =
@@ -160,49 +162,49 @@ public:
                                            ctx_->gpu_queue().stream());
 
               ctx_->gpu_queue().sync();
+#endif
             }
-
 
             // check reversed data
             for (std::size_t i = 0; i < dataInPlace.size(); ++i) {
               ASSERT_EQ(dataInPlace[i], dataOutOfPlace[i]);
               ASSERT_EQ(dataInPlace[i], domain[dimIdx][i]);
             }
-
           }
-
-
         },
         partition);
-
-
-
   }
 
   std::shared_ptr<bipp::ContextInternal> ctx_;
 };
 
 using DomainPartitionSingle = DomainPartitionTest<float>;
-using DomainPartitioDouble = DomainPartitionTest<double>;
+using DomainPartitionDouble = DomainPartitionTest<double>;
 
 template <typename T>
-static auto test_grid_simple(DomainPartitionTest<T>& t) ->  void {
+static auto test_grid_random(std::size_t n, std::array<std::size_t, 3> gridDimensions,
+                             DomainPartitionTest<T>& t) -> void {
   std::minstd_rand randGen(42);
   std::uniform_real_distribution<T> distri(-5.0, 10.0);
 
-  std::vector<T> x(100);
-  std::vector<T> y(100);
-  std::vector<T> z(100);
+  std::vector<T> x(n);
+  std::vector<T> y(n);
+  std::vector<T> z(n);
 
   for (auto& val : x) val = distri(randGen);
   for (auto& val : y) val = distri(randGen);
   for (auto& val : z) val = distri(randGen);
 
-  t.test_grid({2, 2, 2}, {x, y, z});
+  t.test_grid(gridDimensions, {x, y, z});
 }
 
-TEST_P(DomainPartitionSingle, gridSimple) { test_grid_simple(*this);}
+TEST_P(DomainPartitionSingle, grid_1) { test_grid_random(1, {2, 3, 4}, *this); }
 
+TEST_P(DomainPartitionDouble, grid_1) { test_grid_random(1, {2, 3, 4}, *this); }
+
+TEST_P(DomainPartitionSingle, grid_100) { test_grid_random(100, {2, 3, 4}, *this); }
+
+TEST_P(DomainPartitionDouble, grid_100) { test_grid_random(100, {2, 3, 4}, *this); }
 
 static auto param_type_names(const ::testing::TestParamInfo<std::tuple<BippProcessingUnit>>& info)
     -> std::string {
@@ -226,6 +228,6 @@ INSTANTIATE_TEST_SUITE_P(DomainPartition, DomainPartitionSingle,
                          ::testing::Combine(::testing::Values(TEST_PROCESSING_UNITS)),
                          param_type_names);
 
-// INSTANTIATE_TEST_SUITE_P(Lofar, StandardSynthesisLofarDouble,
-//                          ::testing::Combine(::testing::Values(TEST_PROCESSING_UNITS)),
-//                          param_type_names);
+INSTANTIATE_TEST_SUITE_P(Lofar, DomainPartitionDouble,
+                         ::testing::Combine(::testing::Values(TEST_PROCESSING_UNITS)),
+                         param_type_names);
