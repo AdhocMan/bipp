@@ -14,6 +14,9 @@ namespace bipp {
 namespace gpu {
 
 namespace {
+using GroupIndexType = unsigned;
+using GroupSizeType = unsigned long long;
+
 template <typename T, std::size_t DIM>
 struct ArrayWrapper {
   ArrayWrapper(const std::array<T, DIM>& a) {
@@ -24,11 +27,11 @@ struct ArrayWrapper {
 };
 }  // namespace
 
-template <typename T, typename F, std::size_t DIM>
+template <typename T, std::size_t DIM>
 static __global__ void assign_group_kernel(std::size_t n,
                                            ArrayWrapper<std::size_t, DIM> gridDimensions,
                                            const T* __restrict__ minCoordsMaxGlobal,
-                                           ArrayWrapper<const T*, DIM> coord, F* __restrict__ out) {
+                                           ArrayWrapper<const T*, DIM> coord, GroupIndexType* __restrict__ out) {
   T minCoords[DIM];
   T maxCoords[DIM];
   for (std::size_t dimIdx = 0; dimIdx < DIM; ++dimIdx) {
@@ -44,14 +47,14 @@ static __global__ void assign_group_kernel(std::size_t n,
   }
 
   for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n; i += gridDim.x * blockDim.x) {
-    std::size_t groupIndex = 0;
+    GroupIndexType groupIndex = 0;
     for (std::size_t dimIdx = DIM - 1;; --dimIdx) {
       const T* __restrict__ coordDimPtr = coord.data[dimIdx];
       groupIndex = groupIndex * gridDimensions.data[dimIdx] +
-                   max(min(static_cast<std::size_t>(gridSpacingInv[dimIdx] *
-                                                    (coordDimPtr[i] - minCoords[dimIdx])),
-                           gridDimensions.data[dimIdx] - 1),
-                       std::size_t(0));
+                   max(min(static_cast<GroupIndexType>(gridSpacingInv[dimIdx] *
+                                                       (coordDimPtr[i] - minCoords[dimIdx])),
+                           static_cast<GroupIndexType>(gridDimensions.data[dimIdx] - 1)),
+                       GroupIndexType(0));
 
       if (!dimIdx) break;
     }
@@ -62,25 +65,24 @@ static __global__ void assign_group_kernel(std::size_t n,
 
 template <std::size_t BLOCK_THREADS>
 static __global__ void group_count_kernel(std::size_t nGroups, std::size_t n,
-                                          const unsigned* __restrict__ in,
-                                          unsigned long long* groupCount) {
-  __shared__ unsigned long long localCount[BLOCK_THREADS];
+                                          const GroupIndexType* __restrict__ in,
+                                          GroupSizeType* groupCount) {
+  __shared__ GroupIndexType inCache[BLOCK_THREADS];
 
-
-  for (unsigned groupStart = blockIdx.y * BLOCK_THREADS; groupStart < nGroups;
+  for (GroupIndexType groupStart = blockIdx.y * BLOCK_THREADS; groupStart < nGroups;
        groupStart += gridDim.y * BLOCK_THREADS) {
-    localCount[threadIdx.x] = 0;
-    __syncthreads();
-    for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n;
-         i += gridDim.x * blockDim.x) {
-      const auto g = in[i];
-      if(g >= groupStart && g < groupStart + BLOCK_THREADS)
-        atomicAdd(localCount + (g - groupStart), 1);
+    const GroupIndexType myGroup = groupStart + threadIdx.x;
+    GroupSizeType myCount = 0;
+
+    for (std::size_t idxStart = blockIdx.x * BLOCK_THREADS; idxStart < n;
+         idxStart += gridDim.x * BLOCK_THREADS) {
+      if (idxStart + threadIdx.x < n) inCache[threadIdx.x] = in[idxStart + threadIdx.x];
+      __syncthreads();
+      for (std::size_t i = 0; i < min(n - idxStart, BLOCK_THREADS); ++i) {
+        myCount += (myGroup == inCache[i]);
+      }
     }
-    __syncthreads();
-    if(groupStart + threadIdx.x < nGroups && localCount[threadIdx.x])
-      atomicAdd(groupCount + groupStart + threadIdx.x, localCount[threadIdx.x]);
-    __syncthreads();
+    if (myGroup < nGroups && myCount) atomicAdd(groupCount + myGroup, myCount);
   }
 }
 
@@ -93,7 +95,7 @@ static __global__ void assign_index_kernel(std::size_t n, T* __restrict__ out) {
 
 template <typename T>
 static __global__ void reverse_permut_kernel(std::size_t n, const std::size_t* __restrict__ permut,
-                                           const T* __restrict__ in, T* __restrict__ out) {
+                                             const T* __restrict__ in, T* __restrict__ out) {
   for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n; i += gridDim.x * blockDim.x) {
     out[permut[i]] = in[i];
   }
@@ -101,7 +103,7 @@ static __global__ void reverse_permut_kernel(std::size_t n, const std::size_t* _
 
 template <typename T>
 static __global__ void apply_permut_kernel(std::size_t n, const std::size_t* __restrict__ permut,
-                                             const T* __restrict__ in, T* __restrict__ out) {
+                                           const T* __restrict__ in, T* __restrict__ out) {
   for (std::size_t i = threadIdx.x + blockIdx.x * blockDim.x; i < n; i += gridDim.x * blockDim.x) {
     out[i] = in[permut[i]];
   }
@@ -120,16 +122,16 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
   auto& q = ctx->gpu_queue();
 
   auto permutBuffer = q.create_device_buffer<std::size_t>(n);
-  auto groupSizesBuffer = q.create_device_buffer<unsigned long long>(gridSize);
+  auto groupSizesBuffer = q.create_device_buffer<GroupSizeType>(gridSize);
   auto groupBufferHost = q.create_pinned_buffer<Group>(gridSize);
 
   // Create block to make sure buffers go out-of-scope before next sync call to safe memory
   {
     auto minMaxBuffer = q.create_device_buffer<T>(2 * DIM);
-    auto keyBuffer =
-        q.create_device_buffer<unsigned>(n);  // unsigned should be enough to enumerate groups
+    auto keyBuffer = q.create_device_buffer<GroupIndexType>(
+        n);  // GroupIndexType should be enough to enumerate groups
     auto indicesBuffer = q.create_device_buffer<std::size_t>(n);
-    auto sortedKeyBuffer = q.create_device_buffer<unsigned>(n);
+    auto sortedKeyBuffer = q.create_device_buffer<GroupIndexType>(n);
 
     // Compute the minimum and maximum in each dimension stored in minMax as
     // (min_x, min_y, ..., max_x, max_y, ...)
@@ -161,8 +163,8 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
       constexpr int blockSize = 256;
       const dim3 block(std::min<int>(blockSize, q.device_prop().maxThreadsDim[0]), 1, 1);
       const auto grid = kernel_launch_grid(q.device_prop(), {n, 1, 1}, block);
-      api::launch_kernel(assign_group_kernel<T, unsigned, DIM>, grid, block, 0, q.stream(), n,
-                         gridDimensions, minMaxBuffer.get(), coord, keyBuffer.get());
+      api::launch_kernel(assign_group_kernel<T, DIM>, grid, block, 0, q.stream(), n, gridDimensions,
+                         minMaxBuffer.get(), coord, keyBuffer.get());
     }
 
     // Write indices before sorting
@@ -179,12 +181,12 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
       std::size_t workSize = 0;
       api::cub::DeviceRadixSort::SortPairs(
           nullptr, workSize, keyBuffer.get(), sortedKeyBuffer.get(), indicesBuffer.get(),
-          permutBuffer.get(), n, 0, sizeof(unsigned) * 8, q.stream());
+          permutBuffer.get(), n, 0, sizeof(GroupIndexType) * 8, q.stream());
 
       auto workBuffer = q.create_device_buffer<char>(workSize);
       api::cub::DeviceRadixSort::SortPairs(
           workBuffer.get(), workSize, keyBuffer.get(), sortedKeyBuffer.get(), indicesBuffer.get(),
-          permutBuffer.get(), n, 0, sizeof(unsigned) * 8, q.stream());
+          permutBuffer.get(), n, 0, sizeof(GroupIndexType) * 8, q.stream());
     }
 
     // Compute the number of elements in each group
@@ -202,7 +204,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
 
   // Compute group begin and size
   {
-    auto groupSizesHostBuffer = q.create_pinned_buffer<unsigned long long>(groupSizesBuffer.size());
+    auto groupSizesHostBuffer = q.create_pinned_buffer<GroupSizeType>(groupSizesBuffer.size());
     api::memcpy_async(groupSizesHostBuffer.get(), groupSizesBuffer.get(),
                       groupSizesBuffer.size_in_bytes(), api::flag::MemcpyDeviceToHost, q.stream());
 
