@@ -29,12 +29,12 @@ static auto system_memory() {
 }
 
 template <typename T>
-NufftSynthesis<T>::NufftSynthesis(std::shared_ptr<ContextInternal> ctx, T tol, std::size_t nAntenna,
-                                  std::size_t nBeam, std::size_t nIntervals, std::size_t nFilter,
-                                  const BippFilter* filter, std::size_t nPixel, const T* lmnX,
-                                  const T* lmnY, const T* lmnZ)
+NufftSynthesis<T>::NufftSynthesis(std::shared_ptr<ContextInternal> ctx, NufftSynthesisOptions opt,
+                                  std::size_t nAntenna, std::size_t nBeam, std::size_t nIntervals,
+                                  std::size_t nFilter, const BippFilter* filter, std::size_t nPixel,
+                                  const T* lmnX, const T* lmnY, const T* lmnZ)
     : ctx_(std::move(ctx)),
-      tol_(tol),
+      opt_(std::move(opt)),
       nIntervals_(nIntervals),
       nFilter_(nFilter),
       nPixel_(nPixel),
@@ -144,7 +144,7 @@ auto NufftSynthesis<T>::computeNufft() -> void {
       for (const auto& [imgBegin, imgSize] : imgPartition_.groups()) {
         if (!imgSize) continue;
 
-        Nufft3d3<T> transform(1, tol_, 1, inputSize, uvwX_.get() + inputBegin,
+        Nufft3d3<T> transform(1, opt_.tolerance, 1, inputSize, uvwX_.get() + inputBegin,
                               uvwY_.get() + inputBegin, uvwZ_.get() + inputBegin, imgSize,
                               lmnX_.get() + imgBegin, lmnY_.get() + imgBegin,
                               lmnZ_.get() + imgBegin);

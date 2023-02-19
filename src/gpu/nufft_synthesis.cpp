@@ -18,12 +18,12 @@ namespace bipp {
 namespace gpu {
 
 template <typename T>
-NufftSynthesis<T>::NufftSynthesis(std::shared_ptr<ContextInternal> ctx, T tol, std::size_t nAntenna,
-                                  std::size_t nBeam, std::size_t nIntervals, std::size_t nFilter,
-                                  const BippFilter* filterHost, std::size_t nPixel, const T* lmnX,
-                                  const T* lmnY, const T* lmnZ)
+NufftSynthesis<T>::NufftSynthesis(std::shared_ptr<ContextInternal> ctx, NufftSynthesisOptions opt,
+                                  std::size_t nAntenna, std::size_t nBeam, std::size_t nIntervals,
+                                  std::size_t nFilter, const BippFilter* filterHost,
+                                  std::size_t nPixel, const T* lmnX, const T* lmnY, const T* lmnZ)
     : ctx_(std::move(ctx)),
-      tol_(tol),
+      opt_(std::move(opt)),
       nIntervals_(nIntervals),
       nFilter_(nFilter),
       nPixel_(nPixel),
@@ -117,8 +117,8 @@ auto NufftSynthesis<T>::computeNufft() -> void {
     auto output = queue.create_device_buffer<api::ComplexType<T>>(nPixel_);
     auto outputPtr = output.get();
     queue.sync();  // cufinufft cannot be asigned a stream
-    Nufft3d3<T> transform(1, tol_, 1, nAntenna_ * nAntenna_ * inputCount_, uvwX_.get(), uvwY_.get(),
-                          uvwZ_.get(), nPixel_, lmnX_.get(), lmnY_.get(), lmnZ_.get());
+    Nufft3d3<T> transform(1, opt_.tolerance, 1, nAntenna_ * nAntenna_ * inputCount_, uvwX_.get(),
+                          uvwY_.get(), uvwZ_.get(), nPixel_, lmnX_.get(), lmnY_.get(), lmnZ_.get());
 
     const auto ldVirtVis3 = nAntenna_;
     const auto ldVirtVis2 = nMaxInputCount_ * nAntenna_ * ldVirtVis3;

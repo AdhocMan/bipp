@@ -54,8 +54,9 @@ N_antenna = dev(time[0]).data.shape[0]
 obs_end = time[-1]
 
 # Imaging
+opt = bipp.NufftSynthesisOptions()
+opt.tolerance = 1e-3
 N_pix = 350
-eps = 1e-3
 precision = "single"
 
 t1 = tt.time()
@@ -85,6 +86,7 @@ N_eig, intensity_intervals = I_est.infer_parameters()
 # Imaging
 imager = bipp.NufftSynthesis(
     ctx,
+    opt,
     N_antenna,
     N_station,
     intensity_intervals.shape[0],
@@ -93,7 +95,6 @@ imager = bipp.NufftSynthesis(
     lmn_grid[1],
     lmn_grid[2],
     precision,
-    eps,
 )
 
 for t in ProgressBar(time[::time_slice]):
@@ -123,6 +124,7 @@ sensitivity_intervals = np.array([[0, np.finfo("f").max]])
 imager = None  # release previous imager first to some additional memory
 imager = bipp.NufftSynthesis(
     ctx,
+    opt,
     N_antenna,
     N_station,
     sensitivity_intervals.shape[0],
@@ -131,7 +133,6 @@ imager = bipp.NufftSynthesis(
     lmn_grid[1],
     lmn_grid[2],
     precision,
-    eps,
 )
 
 for t in ProgressBar(time[::time_slice]):
