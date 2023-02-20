@@ -53,11 +53,24 @@ time = obs_start + (T_integration * u.s) * np.arange(3595)
 N_antenna = dev(time[0]).data.shape[0]
 obs_end = time[-1]
 
-# Imaging
+# Nufft Synthesis options
+
 opt = bipp.NufftSynthesisOptions()
-opt.tolerance = 1e-3
-N_pix = 350
+# Set the tolerance for NUFFT, which is the maximum relative error.
+opt.set_tolerance(1e-3)
+# Set the maximum number of data packages that are processed together after collection.
+# A larger number increses memory usage, but usually improves performance.
+opt.set_collect_group_size(20)
+# Set the domain splitting methods for image and uvw coordinates.
+# Splitting decreases memory usage, but may lead to lower performance.
+# Best used with a wide spread of image or uvw coordinates.
+opt.set_local_image_partition(bipp.Partition.grid([1,1,1]))
+opt.set_local_uvw_partition(bipp.Partition.grid([1,1,1]))
 precision = "single"
+
+
+# Imaging
+N_pix = 350
 
 t1 = tt.time()
 N_level = 3

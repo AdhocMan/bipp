@@ -188,7 +188,6 @@ auto NufftSynthesis<T>::computeNufft() -> void {
     }
   }
 
-  api::stream_synchronize(nullptr);  // cufinufft cannot be asigned a stream
   collectCount_ = 0;
 }
 
