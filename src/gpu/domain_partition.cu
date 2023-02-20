@@ -117,7 +117,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
 
   const auto gridSize = std::accumulate(gridDimensions.begin(), gridDimensions.end(),
                                         std::size_t(1), std::multiplies<std::size_t>());
-  if (gridSize <= 1) return DomainPartition::single(ctx, n);
+  if (gridSize <= 1) return DomainPartition::none(ctx, n);
 
   auto& q = ctx->gpu_queue();
 
@@ -214,6 +214,7 @@ auto DomainPartition::grid(const std::shared_ptr<ContextInternal>& ctx,
     auto* __restrict__ groupsPtr = groupBufferHost.get();
     auto* __restrict__ groupSizesPtr = groupSizesHostBuffer.get();
 
+    // number of groups is always >= 1
     groupsPtr[0].begin = 0;
     groupsPtr[0].size = groupSizesPtr[0];
     // Compute group begin index

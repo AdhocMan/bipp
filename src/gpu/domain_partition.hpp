@@ -22,7 +22,7 @@ public:
     std::size_t size = 0;
   };
 
-  static auto single(const std::shared_ptr<ContextInternal>& ctx, std::size_t n) {
+  static auto none(const std::shared_ptr<ContextInternal>& ctx, std::size_t n) {
     Buffer<Group> groupsHost(ctx->host_alloc(), 1);
     *groupsHost.get() = Group{0, n};
     return DomainPartition(ctx, n, std::move(groupsHost));

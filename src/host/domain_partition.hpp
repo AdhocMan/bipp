@@ -21,7 +21,7 @@ public:
     std::size_t size = 0;
   };
 
-  static auto single(const std::shared_ptr<ContextInternal>& ctx,std::size_t n ) {
+  static auto none(const std::shared_ptr<ContextInternal>& ctx,std::size_t n ) {
     Buffer<Group> groups(ctx->host_alloc(), 1);
     *groups.get() = Group{0, n};
     return DomainPartition(ctx, n, std::move(groups));
@@ -32,7 +32,7 @@ public:
                    std::size_t n, std::array<const T*, DIM> coord) -> DomainPartition {
     const auto gridSize = std::accumulate(gridDimensions.begin(), gridDimensions.end(),
                                           std::size_t(1), std::multiplies<std::size_t>());
-    if (gridSize <= 1) return DomainPartition::single(ctx, n);
+    if (gridSize <= 1) return DomainPartition::none(ctx, n);
 
     std::array<T, DIM> minCoord, maxCoord;
 

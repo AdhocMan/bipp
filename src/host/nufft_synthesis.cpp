@@ -44,19 +44,32 @@ NufftSynthesis<T>::NufftSynthesis(std::shared_ptr<ContextInternal> ctx, NufftSyn
       lmnX_(ctx_->host_alloc(), nPixel_),
       lmnY_(ctx_->host_alloc(), nPixel_),
       lmnZ_(ctx_->host_alloc(), nPixel_),
-      imgPartition_(DomainPartition::grid<T, 2>(ctx_, {1, 1}, nPixel_, {lmnX, lmnY})),
+      imgPartition_(DomainPartition::none(ctx_, nPixel_)),
       collectCount_(0) {
   std::memcpy(filter_.get(), filter, sizeof(BippFilter) * nFilter_);
+
+  std::visit(
+      [&](auto&& arg) -> void {
+        using ArgType = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<ArgType, Partition::Grid>) {
+          imgPartition_ =
+              DomainPartition::grid<T, 3>(ctx_, arg.dimensions, nPixel_, {lmnX, lmnY, lmnZ});
+        }
+      },
+      opt_.localImagePartition.method);
 
   imgPartition_.apply(lmnX, lmnX_.get());
   imgPartition_.apply(lmnY, lmnY_.get());
   imgPartition_.apply(lmnZ, lmnZ_.get());
 
-  // use at most 33% of memory more accumulation, but not more than 200
-  // iterations. TODO: find optimum
-  nMaxInputCount_ = (system_memory() / 3) /
-                    (nIntervals_ * nFilter_ * nAntenna_ * nAntenna_ * sizeof(std::complex<T>));
-  nMaxInputCount_ = std::min<std::size_t>(std::max<std::size_t>(1, nMaxInputCount_), 200);
+  if (opt_.collectGroupSize && opt_.collectGroupSize.value() > 0) {
+    nMaxInputCount_ = opt_.collectGroupSize.value();
+  } else {
+    // use at most 33% of memory more accumulation, but not more than 200
+    nMaxInputCount_ = (system_memory() / 3) /
+                      (nIntervals_ * nFilter_ * nAntenna_ * nAntenna_ * sizeof(std::complex<T>));
+    nMaxInputCount_ = std::min<std::size_t>(std::max<std::size_t>(1, nMaxInputCount_), 200);
+  }
 
   const auto virtualVisBufferSize =
       nIntervals_ * nFilter_ * nAntenna_ * nAntenna_ * nMaxInputCount_;
@@ -120,8 +133,17 @@ auto NufftSynthesis<T>::computeNufft() -> void {
 
     const auto nInputPoints = nAntenna_ * nAntenna_ * collectCount_;
 
-    auto inputPartition = DomainPartition::grid<T, 3>(ctx_, {1, 1, 1}, nInputPoints,
-                                                      {uvwX_.get(), uvwY_.get(), uvwZ_.get()});
+    auto inputPartition = DomainPartition::none(ctx_, nInputPoints);
+
+    std::visit(
+        [&](auto&& arg) -> void {
+          using ArgType = std::decay_t<decltype(arg)>;
+          if constexpr (std::is_same_v<ArgType, Partition::Grid>) {
+            inputPartition = DomainPartition::grid<T, 3>(ctx_, arg.dimensions, nInputPoints,
+                                                         {uvwX_.get(), uvwY_.get(), uvwZ_.get()});
+          }
+        },
+        opt_.localUVWPartition.method);
 
     const auto ldVirtVis3 = nAntenna_;
     const auto ldVirtVis2 = nMaxInputCount_ * nAntenna_ * ldVirtVis3;

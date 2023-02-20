@@ -3,6 +3,7 @@
 #include "bipp/config.h"
 #include "bipp/nufft_synthesis.hpp"
 #include "context_internal.hpp"
+#include "gpu/domain_partition.hpp"
 #include "gpu/util/runtime_api.hpp"
 #include "memory/buffer.hpp"
 
@@ -34,8 +35,9 @@ private:
   const std::size_t nIntervals_, nFilter_, nPixel_, nAntenna_, nBeam_;
   Buffer<BippFilter> filterHost_;
   Buffer<T> lmnX_, lmnY_, lmnZ_;
+  DomainPartition imgPartition_;
 
-  std::size_t nMaxInputCount_, inputCount_;
+  std::size_t nMaxInputCount_, collectCount_;
   Buffer<api::ComplexType<T>> virtualVis_;
   Buffer<T> uvwX_, uvwY_, uvwZ_;
   Buffer<T> img_;

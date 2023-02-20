@@ -39,10 +39,10 @@ public:
 
 #if defined(BIPP_CUDA) || defined(BIPP_ROCM)
     std::variant<bipp::host::DomainPartition, bipp::gpu::DomainPartition> partition =
-        bipp::host::DomainPartition::single(ctx_, domain[0].size());
+        bipp::host::DomainPartition::none(ctx_, domain[0].size());
 #else
     std::variant<bipp::host::DomainPartition> partition =
-        bipp::host::DomainPartition::single(ctx_, domain[0].size());
+        bipp::host::DomainPartition::none(ctx_, domain[0].size());
 #endif
 
     if (ctx_->processing_unit() == BIPP_PU_GPU) {
