@@ -128,15 +128,16 @@ auto call_eigh(Context& ctx, T wl, const py::array_t<std::complex<T>, py::array:
   check_2d_array(xyz, {nAntenna, 3});
   check_2d_array(s, {nBeam, nBeam});
 
-  auto d = py::array_t<T, py::array::f_style>({py::ssize_t(nBeam)});
-  std::pair<std::size_t, std::size_t> pev{0, 0};
-  pev = eigh<T>(ctx, wl, nAntenna, nBeam, s.data(0),
+  std::vector<T> d(nBeam);
+  auto pev = eigh<T>(ctx, wl, nAntenna, nBeam, s.data(0),
                     safe_cast<std::size_t>(s.strides(1) / s.itemsize()), w.data(0),
                     safe_cast<std::size_t>(w.strides(1) / w.itemsize()), xyz.data(0),
-                    safe_cast<std::size_t>(xyz.strides(1) / xyz.itemsize()), d.mutable_data(0));
-  d.resize({pev.first});
+                    safe_cast<std::size_t>(xyz.strides(1) / xyz.itemsize()), d.data());
 
-  return d;
+  auto dArray = py::array_t<T, py::array::f_style>({py::ssize_t(pev.first)});
+  std::memcpy(dArray.mutable_data(0), d.data(), dArray.size() * sizeof(T));
+
+  return dArray;
 }
 
 struct StandardSynthesisDispatcher {

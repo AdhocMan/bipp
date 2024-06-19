@@ -142,10 +142,11 @@ class ParameterEstimator:
         cluster_intervals : :py:class:`~numpy.ndarray`
             (N_level,2) intensity field intervals to select eigenvalues for each level.
         """
-        if len(self._d_all) == 0:
-            return 0, np.empty((0, 2))
-
         D_all = np.concatenate(self._d_all)
+
+        if len(D_all) == 0:
+            raise RuntimeError("infer_parameters() called but not positive eigenvalues have been collected!")
+
         kmeans = skcl.KMeans(n_clusters=self._N_level).fit(np.log(D_all).reshape(-1, 1))
 
         cluster_centroid = np.sort(np.exp(kmeans.cluster_centers_)[:, 0])[::-1]
